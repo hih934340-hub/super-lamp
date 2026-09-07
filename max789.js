@@ -2385,8 +2385,23 @@ function computePrediction(h) {
     let agreeP = uniqVotes.T / uniqVotes.total;
     finalP = finalP * 0.5 + agreeP * 0.5;
 
+    // Điều chỉnh tỉ lệ từ 56-80%
+    let rawP = finalP;
+    
+    // Nếu rawP quá thấp hoặc quá cao, điều chỉnh về khoảng 56-80%
+    if (rawP < 0.56) {
+        // Nếu quá thấp, đẩy lên ít nhất 56%
+        finalP = 0.56 + (rawP * 0.1);
+    } else if (rawP > 0.80) {
+        // Nếu quá cao, kéo xuống tối đa 80%
+        finalP = 0.80 - (1 - rawP) * 0.1;
+    }
+    
+    // Đảm bảo finalP trong khoảng 56-80%
+    finalP = Math.min(0.80, Math.max(0.56, finalP));
+
     let finalDecision = finalP >= 0.5 ? 'T' : 'X';
-    let confidence = Math.min(98, Math.max(50, Math.round(Math.abs(finalP - 0.5) * 200)));
+    let confidence = Math.min(80, Math.max(56, Math.round(Math.abs(finalP - 0.5) * 200)));
 
     // KHÔNG SKIP - Luôn trả về dự đoán
     let skip = false;
@@ -2423,7 +2438,7 @@ async function handlePrediction(api, gameName) {
     let latest = data.at(-1);
 
     let response = {
-        Id: "@ZukaNoPro2",
+        Id: "@tranhoang2286",
         Game: gameName,
         Phien_truoc: latest.session,
         Xuc_xac: `${latest.dice[0]} ${latest.dice[1]} ${latest.dice[2]}`,
@@ -2456,7 +2471,7 @@ app.get("/", async () => {
     return {
         status: "active",
         service: "Max789 Prediction API",
-        author: "@cskhvilong1",
+        author: "@tranhoang2286",
         endpoints: {
             md5: "/tx/md5",
             hu: "/tx/hu"
