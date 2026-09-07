@@ -1,0 +1,19 @@
+{
+  "name": "max789-prediction-api",
+  "version": "1.0.0",
+  "description": "Dự đoán Tài Xỉu Max789 - MD5 & Hũ",
+  "main": "max789.js",
+  "type": "module",
+  "scripts": {
+    "start": "node max789.js",
+    "dev": "node max789.js"
+  },
+  "dependencies": {
+    "fastify": "^4.28.0",
+    "@fastify/cors": "^9.0.1",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
