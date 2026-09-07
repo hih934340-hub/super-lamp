@@ -1204,6 +1204,430 @@ function cauXienCheo(h) {
     return { p: rate > 0.55 ? 0.52 : 0.48 };
 }
 
+// THÊM LẠI CÁC HÀM BỊ THIẾU
+function bridgePatternDetect(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 8) return 0.5;
+    let pat = {};
+    for (let l = 2; l <= 5; l++) {
+        for (let i = 0; i <= n - l - 1; i++) {
+            let p = h.slice(i, i + l).join('');
+            if (!pat[p]) pat[p] = { t: 0, x: 0 };
+            if (i + l < n) { h[i + l] === 'T' ? pat[p].t++ : pat[p].x++; }
+        }
+    }
+    let bestP = 0.5, bestScore = 0;
+    for (let p in pat) {
+        let e = pat[p], tot = e.t + e.x;
+        if (tot >= 3) {
+            let prob = bayesP(e.t, tot), score = tot * Math.abs(prob - 0.5);
+            if (score > bestScore) { bestScore = score; bestP = prob; }
+        }
+    }
+    return bestP;
+}
+
+function trendStrengthPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 8) return 0.5;
+    let sCount = [], curS = 1;
+    for (let i = 1; i < n; i++) {
+        if (h[i] === h[i - 1]) curS++;
+        else { sCount.push(curS); curS = 1; }
+    }
+    sCount.push(curS);
+    if (sCount.length < 2) return 0.5;
+    let avgS = sCount.reduce((a, b) => a + b, 0) / sCount.length;
+    let longT = countIn(h, 'T', n) / n;
+    let shortT = countIn(h, 'T', Math.min(5, n)) / Math.min(5, n);
+    let streakBias = streak(h) / Math.max(avgS, 1);
+    let prob = longT * 0.4 + shortT * 0.3 + (h[0] === 'T' ? 0.5 + streakBias * 0.1 : 0.5 - streakBias * 0.1);
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function thetaPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 10) return 0.5;
+    let v = h.map(x => x === 'T' ? 1 : 0), th = 2.0, m = v.reduce((a, b) => a + b, 0) / n;
+    let t = Array.from({ length: n }, (_, i) => i), tm = (n - 1) / 2, num = 0, den = 0;
+    for (let i = 0; i < n; i++) { num += (v[i] - m) * (t[i] - tm); den += (t[i] - tm) ** 2; }
+    let sl = den > 0 ? num / den : 0, ic = m - sl * tm;
+    let tl = v.map((x, i) => x + th * (sl * (i - tm) + ic - x));
+    return Math.min(Math.max(tl[tl.length - 1], 0.01), 0.99);
+}
+
+function corrPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 15) return 0.5;
+    let v = h.map(x => x === 'T' ? 1 : 0), m = v.reduce((a, b) => a + b, 0) / n;
+    let vr = 0;
+    for (let x of v) vr += (x - m) ** 2;
+    if (vr < 1e-10) return 0.5;
+    let bc = 0, bl = 0;
+    for (let l = 1; l <= Math.min(20, Math.floor(n / 3)); l++) {
+        let num = 0;
+        for (let i = l; i < n; i++) num += (v[i] - m) * (v[i - l] - m);
+        if (Math.abs(num / vr) > Math.abs(bc)) { bc = num / vr; bl = l; }
+    }
+    return Math.abs(bc) < 0.05 ? 0.5 : Math.min(Math.max(0.5 + bc * 0.3, 0.01), 0.99);
+}
+
+function dampedTrendPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 8) return 0.5;
+    let v = h.map(x => x === 'T' ? 1 : 0), l = v[0], t = 0, a = 0.2, b = 0.05, phi = 0.95;
+    for (let i = 1; i < n; i++) {
+        let p = l;
+        l = a * v[i] + (1 - a) * (l + phi * t);
+        t = b * (l - p) + (1 - b) * phi * t;
+    }
+    return Math.min(Math.max(l + phi * t, 0.01), 0.99);
+}
+
+function spectralFFTPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 20) return null;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let meanVal = y.reduce((a, b) => a + b, 0) / n;
+    let padded = y.slice();
+    while (padded.length & (padded.length - 1)) padded.push(meanVal);
+    let N = padded.length;
+
+    function fft(sig) {
+        if (sig.length <= 1) return sig;
+        let even = fft(sig.filter((_, i) => i % 2 === 0));
+        let odd = fft(sig.filter((_, i) => i % 2 === 1));
+        let res = new Array(sig.length).fill(0);
+        for (let k = 0; k < sig.length / 2; k++) {
+            let t = -2 * Math.PI * k / sig.length;
+            let c = Math.cos(t), s = Math.sin(t);
+            let re = odd[k] * c - 0 * s, im = 0 * c + odd[k] * s;
+            res[k] = even[k] + re;
+            res[k + sig.length / 2] = even[k] - re;
+        }
+        return res.map(x => Math.abs(x));
+    }
+    let spectrum = fft(padded);
+    let bestFreq = 0, bestPow = 0;
+    for (let f = 2; f <= Math.min(30, Math.floor(N / 3)); f++) {
+        if (spectrum[f] > bestPow) { bestPow = spectrum[f]; bestFreq = f; }
+    }
+    if (bestFreq < 2) return null;
+    let phase = n % bestFreq;
+    let refIdx = n - 1 - phase >= 0 ? n - 1 - phase : 0;
+    let match = 0, total = 0;
+    for (let i = refIdx + bestFreq; i < n; i += bestFreq) { total++; if (h[i] === h[refIdx]) match++; }
+    if (total < 2) return null;
+    let phaseProb = match / total;
+    return Math.min(Math.max(phaseProb * 0.6 + (meanVal > 0.5 ? meanVal : 1 - meanVal) * 0.4, 0.01), 0.99);
+}
+
+function mutualInfoPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 15) return null;
+    let bestLag = 0, bestMI = -Infinity;
+    for (let lag = 1; lag <= Math.min(15, Math.floor(n / 3)); lag++) {
+        let a = 0, b = 0, c = 0, d = 0;
+        for (let i = lag; i < n; i++) {
+            if (h[i - lag] === 'T' && h[i] === 'T') a++;
+            else if (h[i - lag] === 'T' && h[i] === 'X') b++;
+            else if (h[i - lag] === 'X' && h[i] === 'T') c++;
+            else if (h[i - lag] === 'X' && h[i] === 'X') d++;
+        }
+        let total = a + b + c + d;
+        if (total < 4) continue;
+        let pT = (a + c) / total, pX = (b + d) / total;
+        let pT_lag = (a + b) / total, pX_lag = (c + d) / total;
+        let pTT = a / total, pTX = b / total, pXT = c / total, pXX = d / total;
+        let mi = 0;
+        if (pTT > 0 && pT > 0 && pT_lag > 0) mi += pTT * Math.log2(pTT / (pT * pT_lag));
+        if (pTX > 0 && pX > 0 && pT_lag > 0) mi += pTX * Math.log2(pTX / (pX * pT_lag));
+        if (pXT > 0 && pT > 0 && pX_lag > 0) mi += pXT * Math.log2(pXT / (pT * pX_lag));
+        if (pXX > 0 && pX > 0 && pX_lag > 0) mi += pXX * Math.log2(pXX / (pX * pX_lag));
+        if (mi > bestMI) { bestMI = mi; bestLag = lag; }
+    }
+    if (bestLag === 0 || bestMI < 0.05) return null;
+    let a2 = 0, b2 = 0;
+    for (let i = bestLag; i < n; i++) {
+        if (h[i - bestLag] === h[0]) { (h[i] === 'T') ? a2++ : b2++; }
+    }
+    if (a2 + b2 < 3) return null;
+    return Math.min(Math.max(bayesP(a2, b2), 0.01), 0.99);
+}
+
+function copulaPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 15) return null;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let tau = 0, cnt = 0;
+    for (let i = 0; i < n - 1; i++) {
+        for (let j = i + 1; j < Math.min(i + 10, n); j++) {
+            let ci = y[i] > y[j] ? 1 : (y[i] < y[j] ? -1 : 0);
+            let cj = y[i + 1] > (j + 1 < n ? y[j + 1] : y[j]) ? 1 : (y[i + 1] < (j + 1 < n ? y[j + 1] : y[j]) ? -1 : 0);
+            if (ci * cj > 0) tau++;
+            else if (ci * cj < 0) tau--;
+            cnt++;
+        }
+    }
+    if (cnt < 5) return null;
+    let kendall = tau / cnt;
+    let p = 0.5 + kendall * 0.3;
+    return Math.min(Math.max(p, 0.01), 0.99);
+}
+
+function ftrlPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 10) return 0.5;
+    let w = [0, 0, 0], z = [0, 0, 0], nVec = [0, 0, 0];
+    let alpha = 0.1, beta = 1.0, l1 = 0.01, l2 = 0.01;
+    let feats = [
+        () => 1,
+        (i) => countIn(h, 'T', Math.min(i + 1, n)) / (Math.min(i + 1, n) || 1) - 0.5,
+        (i) => { let s = streak(h.slice(0, Math.min(i + 1, n))); return Math.min(s, 10) / 10; }
+    ];
+    for (let i = 0; i < n - 1; i++) {
+        let x = feats.map(f => f(i));
+        let wx = 0;
+        for (let j = 0; j < 3; j++) {
+            let s = 0;
+            if (Math.abs(z[j]) <= l1) s = 0;
+            else s = -(z[j] - (z[j] > 0 ? l1 : -l1)) / ((beta + Math.sqrt(nVec[j])) / alpha + l2);
+            wx += s * x[j];
+        }
+        let p = Math.min(Math.max(1 / (1 + Math.exp(-wx)), 0.01), 0.99);
+        let y = h[i + 1] === 'T' ? 1 : 0;
+        let g = (p - y);
+        for (let j = 0; j < 3; j++) {
+            let sigma = (Math.sqrt(nVec[j] + g * g) - Math.sqrt(nVec[j])) / alpha;
+            z[j] += g - sigma * w[j];
+            nVec[j] += g * g;
+            w[j] = (Math.abs(z[j]) <= l1) ? 0 : -(z[j] - (z[j] > 0 ? l1 : -l1)) / ((beta + Math.sqrt(nVec[j])) / alpha + l2);
+        }
+    }
+    let xLast = feats.map(f => f(n - 1));
+    let wxLast = 0;
+    for (let j = 0; j < 3; j++) {
+        let s = 0;
+        if (Math.abs(z[j]) <= l1) s = 0;
+        else s = -(z[j] - (z[j] > 0 ? l1 : -l1)) / ((beta + Math.sqrt(nVec[j])) / alpha + l2);
+        wxLast += s * xLast[j];
+    }
+    let prob = 1 / (1 + Math.exp(-wxLast));
+    let recent = countIn(h, 'T', Math.min(8, n)) / Math.min(8, n);
+    return Math.min(Math.max(prob * 0.3 + recent * 0.7, 0.01), 0.99);
+}
+
+function variationBayesPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 10) return 0.5;
+    let aN = 1, bN = 1;
+    for (let ep = 0; ep < 5; ep++) {
+        let tC = countIn(h, 'T', n);
+        let xC = n - tC;
+        let ELogP = Math.log(aN) - 1 / (2 * aN) - (Math.log(aN + bN) - 1 / (2 * (aN + bN)));
+        let ELog1mP = Math.log(bN) - 1 / (2 * bN) - (Math.log(aN + bN) - 1 / (2 * (aN + bN)));
+        aN = 1 + tC;
+        bN = 1 + xC;
+        aN = Math.max(aN, 0.1);
+        bN = Math.max(bN, 0.1);
+    }
+    let qMean = aN / (aN + bN);
+    let recent = countIn(h, 'T', Math.min(10, n)) / Math.min(10, n);
+    let prob = qMean * 0.6 + recent * 0.4;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function ntkPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 15) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let sigma = 1.0;
+
+    function kernel(xi, xj) { return Math.exp(-((xi - xj) ** 2) / (2 * sigma * sigma)); }
+    let K = [];
+    for (let i = 0; i < n; i++) { K[i] = []; for (let j = 0; j < n; j++) K[i][j] = kernel(i, j); }
+    let target = y.slice(0, n);
+    let Kx = [];
+    for (let i = 0; i < n; i++) Kx[i] = kernel(n, i);
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) {
+        let rowSum = 0;
+        for (let j = 0; j < n; j++) rowSum += K[i][j];
+        if (rowSum > 0) { num += Kx[i] * target[i]; den += Kx[i]; }
+    }
+    if (den < 1e-10) return 0.5;
+    let mu = num / den;
+    let recent = countIn(h, 'T', Math.min(10, n)) / Math.min(10, n);
+    let prob = mu * 0.4 + recent * 0.6;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function deepStatePredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 12) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let d = 4;
+    let mu = new Array(d).fill(0.5),
+        P = Array.from({ length: d }, () => new Array(d).fill(0));
+    for (let i = 0; i < d; i++) P[i][i] = 1;
+    let Q = 0.01,
+        R = 0.2,
+        F = Array.from({ length: d }, (_, i) => Array.from({ length: d }, (_, j) => i === j ? 0.95 : 0));
+    let H = new Array(d).fill(0.5);
+    for (let t = 0; t < n; t++) {
+        let muPred = new Array(d).fill(0);
+        let PPred = Array.from({ length: d }, () => new Array(d).fill(0));
+        for (let i = 0; i < d; i++) { muPred[i] = 0; for (let j = 0; j < d; j++) PPred[i][j] = 0; }
+        for (let i = 0; i < d; i++) {
+            for (let j = 0; j < d; j++) {
+                muPred[i] += F[i][j] * mu[j];
+                for (let k = 0; k < d; k++) PPred[i][j] += F[i][k] * P[k][j] * F[j][k];
+            }
+        }
+        let yPred = 0;
+        for (let i = 0; i < d; i++) yPred += H[i] * muPred[i];
+        let s = 0;
+        for (let i = 0; i < d; i++)
+            for (let j = 0; j < d; j++) s += H[i] * PPred[i][j] * H[j];
+        s += R;
+        let K = new Array(d).fill(0);
+        for (let i = 0; i < d; i++) { K[i] = 0; for (let j = 0; j < d; j++) K[i] += PPred[i][j] * H[j];
+            K[i] /= s; }
+        let innov = y[t] - yPred;
+        for (let i = 0; i < d; i++) mu[i] = muPred[i] + K[i] * innov;
+        for (let i = 0; i < d; i++)
+            for (let j = 0; j < d; j++) P[i][j] = PPred[i][j] - K[i] * H[j] * s;
+    }
+    let yNext = 0;
+    for (let i = 0; i < d; i++) yNext += H[i] * mu[i];
+    return Math.min(Math.max(yNext, 0.01), 0.99);
+}
+
+function hierarchicalBayesPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 12) return 0.5;
+    let groups = [Math.min(5, n), Math.min(10, n), Math.min(20, n), n];
+    let alphas = groups.map(g => { let tC = countIn(h, 'T', g); return tC + 1; });
+    let betas = groups.map(g => { let tC = countIn(h, 'T', g); return g - tC + 1; });
+    let muAlpha = alphas.reduce((a, b) => a + b, 0) / alphas.length;
+    let muBeta = betas.reduce((a, b) => a + b, 0) / betas.length;
+    let globalPrior = muAlpha / (muAlpha + muBeta);
+    let tau = 1 / (1 + n / 50);
+    let recent = countIn(h, 'T', Math.min(10, n)) / Math.min(10, n);
+    let prob = globalPrior * (1 - tau) + recent * tau;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function garchLikePredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 20) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let mu = y.reduce((a, b) => a + b, 0) / n;
+    let omega = 0.01,
+        alpha = 0.1,
+        beta = 0.8;
+    let sigma2 = 0.1;
+    for (let i = 0; i < n; i++) {
+        let eps = y[i] - mu;
+        sigma2 = omega + alpha * eps * eps + beta * sigma2;
+    }
+    let vol = Math.sqrt(sigma2);
+    let bias = mu > 0.5 ? Math.min(mu + vol * 0.2, 0.95) : Math.max(mu - vol * 0.2, 0.05);
+    return Math.min(Math.max(bias, 0.01), 0.99);
+}
+
+function prophetLikePredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 15) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let trend = y.reduce((a, b) => a + b, 0) / n;
+    let changepoints = [];
+    let nCp = Math.min(5, Math.floor(n / 5));
+    for (let i = 0; i < nCp; i++) {
+        let idx = Math.floor((i + 1) * n / (nCp + 1));
+        let before = countIn(h, 'T', idx) / idx;
+        let after = countIn(h.slice(idx), 'T', n - idx) / (n - idx);
+        if (Math.abs(before - after) > 0.15) changepoints.push({ idx, delta: after - before });
+    }
+    if (changepoints.length > 0) {
+        let avgDelta = changepoints.reduce((a, c) => a + c.delta, 0) / changepoints.length;
+        trend += avgDelta * 0.3;
+    }
+    let recent = countIn(h, 'T', Math.min(8, n)) / Math.min(8, n);
+    let prob = trend * 0.5 + recent * 0.5;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function timesNetPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 20) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let periods = [2, 3, 5, 7, 10];
+    let bestScore = 0,
+        bestPeriod = 2;
+    for (let p of periods) {
+        if (p >= n) continue;
+        let score = 0,
+            cnt = 0;
+        for (let i = p; i < n; i++) {
+            if (Math.abs(y[i] - y[i - p]) < 0.5) score++;
+            cnt++;
+        }
+        let s = cnt > 0 ? score / cnt : 0;
+        if (s > bestScore) { bestScore = s;
+            bestPeriod = p; }
+    }
+    let match = 0,
+        total = 0;
+    for (let i = bestPeriod; i < n; i++) { total++; if (y[i] === y[i - bestPeriod]) match++; }
+    let periodProb = total > 0 ? match / total : 0.5;
+    let trend = y.slice(0, Math.min(10, n)).reduce((a, b) => a + b, 0) / Math.min(10, n);
+    let prob = periodProb * 0.4 + trend * 0.6;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function dlinearPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 12) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let movingAvg = Math.min(7, Math.floor(n / 3));
+    let trend = [];
+    for (let i = 0; i < n; i++) {
+        let s = Math.max(0, i - Math.floor(movingAvg / 2));
+        let e = Math.min(n, i + Math.floor(movingAvg / 2) + 1);
+        let sum = 0;
+        for (let j = s; j < e; j++) sum += y[j];
+        trend.push(sum / (e - s));
+    }
+    let seasonal = y.map((v, i) => v - trend[i]);
+    let tSlope = (trend[n - 1] - trend[Math.max(0, n - 10)]) / Math.min(9, n - 1);
+    let trendNext = trend[n - 1] + tSlope;
+    let recentSeasonal = seasonal.slice(-Math.min(4, n)).reduce((a, b) => a + b, 0) / Math.min(4, n);
+    let prob = trendNext + recentSeasonal;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
+function conformalPredict(h) {
+    let n = Math.min(h.length, 200);
+    if (n < 15) return 0.5;
+    let y = h.map(v => v === 'T' ? 1 : 0);
+    let calSize = Math.max(5, Math.floor(n * 0.3));
+    let calY = y.slice(n - calSize);
+    let trainY = y.slice(0, n - calSize);
+    let trainBias = trainY.length > 0 ? trainY.reduce((a, b) => a + b, 0) / trainY.length : 0.5;
+    let nonconf = calY.map((v, i) => Math.abs(v - trainBias));
+    nonconf.sort((a, b) => a - b);
+    let alpha = 0.2,
+        qIdx = Math.ceil((1 - alpha) * (calSize + 1)) - 1;
+    let q = nonconf[Math.min(qIdx, nonconf.length - 1)] || 0.5;
+    let pred = trainBias;
+    let low = Math.max(0, pred - q),
+        high = Math.min(1, pred + q);
+    let recent = countIn(h, 'T', Math.min(8, n)) / Math.min(8, n);
+    let prob = recent * 0.5 + (low + high) / 2 * 0.5;
+    return Math.min(Math.max(prob, 0.01), 0.99);
+}
+
 function lstmGatedPredict(h) {
     let n = Math.min(h.length, 200);
     if (n < 10) return 0.5;
@@ -1234,9 +1658,6 @@ function lstmGatedPredict(h) {
     let recent = countIn(h, 'T', Math.min(8, n)) / Math.min(8, n);
     return Math.min(Math.max(prob * 0.35 + recent * 0.65, 0.01), 0.99);
 }
-
-// Loại bỏ các hàm có random khác (bilstmPredict, gruGatedPredict, transformerEncoderPredict, mlpPredict, cnnLstmPredict, wavenetLikePredict, nBeatsLikePredict, randomForestPredict, lightGbmLikePredict, tcnPredict, nHitsPredict, patchTstPredict)
-// và thay bằng hàm predict đơn giản dựa trên dữ liệu
 
 function computePrediction(h) {
     let d = h.slice(0, Math.min(h.length, 200));
@@ -1414,7 +1835,6 @@ function computePrediction(h) {
     let pLSTM = lstmGatedPredict(d);
     stratList.push({ n: 'LSTM', p: pLSTM, b: 0.55 });
 
-    // Các mô hình khác dùng fixed seed từ dữ liệu
     let pBridge = bridgePatternDetect(d);
     stratList.push({ n: 'BRIDGE', p: pBridge, b: 0.55 });
 
