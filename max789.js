@@ -2359,6 +2359,7 @@ function computePrediction(h) {
     let pConformal = conformalPredict(d);
     stratList.push({ n: 'CONFORMAL', p: pConformal, b: 0.5 });
 
+    // Lọc và tính trọng số
     let sorted = stratList.sort((a, b) => {
         let sa = Math.abs(a.p - 0.5) * 0.7 + 0.3;
         let sb = Math.abs(b.p - 0.5) * 0.7 + 0.3;
@@ -2368,8 +2369,7 @@ function computePrediction(h) {
     let topK = Math.min(sorted.length, Math.max(25, Math.floor(sorted.length * 0.5)));
     let topStrats = sorted.slice(0, topK);
 
-    let sumP = 0,
-        sumW = 0;
+    let sumP = 0, sumW = 0;
     let uniqVotes = { T: 0, total: 0 };
     for (let s of topStrats) {
         let accBoost = 1 + Math.abs(s.p - 0.5) * 0.5;
@@ -2385,31 +2385,16 @@ function computePrediction(h) {
     let agreeP = uniqVotes.T / uniqVotes.total;
     finalP = finalP * 0.5 + agreeP * 0.5;
 
-    // Điều chỉnh tỉ lệ từ 56-80%
-    let rawP = finalP;
-    
-    // Nếu rawP quá thấp hoặc quá cao, điều chỉnh về khoảng 56-80%
-    if (rawP < 0.56) {
-        // Nếu quá thấp, đẩy lên ít nhất 56%
-        finalP = 0.56 + (rawP * 0.1);
-    } else if (rawP > 0.80) {
-        // Nếu quá cao, kéo xuống tối đa 80%
-        finalP = 0.80 - (1 - rawP) * 0.1;
-    }
-    
-    // Đảm bảo finalP trong khoảng 56-80%
-    finalP = Math.min(0.80, Math.max(0.56, finalP));
-
-    let finalDecision = finalP >= 0.5 ? 'T' : 'X';
+    // CÂN BẰNG - Không ép về T hay X, để thuật toán tự quyết định
+    // Chỉ giới hạn confidence trong khoảng 56-80%
     let confidence = Math.min(80, Math.max(56, Math.round(Math.abs(finalP - 0.5) * 200)));
 
-    // KHÔNG SKIP - Luôn trả về dự đoán
-    let skip = false;
+    let finalDecision = finalP >= 0.5 ? 'T' : 'X';
 
     return {
         prediction: finalDecision,
         confidence: confidence,
-        skip: skip,
+        skip: false,
         regime: regime,
         strats: stratList.length
     };
